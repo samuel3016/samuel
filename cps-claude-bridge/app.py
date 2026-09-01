@@ -25,10 +25,10 @@ client = Anthropic(api_key=API_KEY)
 SERVICE_DURATIONS = {"Intermediate Pack":60,"Premium Pro Pack":90,"Studio Hire - 1 Hour":60,"Studio Hire - Half Day":240,"Studio Hire - Full Day":480}
 AVAILABLE_SERVICES = ["Audio Only Podcast","Starter Pack - Instant Podcaster","Intermediate Pack","Premium Pro Pack","Studio Hire - 1 Hour","Studio Hire - Half Day","Studio Hire - Full Day"]
 
-availability_tool = {"name":"check_availability","description":"Checks live Cork Podcast Studio availability through the existing Make scenario. Use when service, date and time are known. If AVAILABLE and booking_url is returned, the exact URL must be included in the final customer response. Availability does not mean booked.","input_schema":{"type":"object","properties":{"action":{"type":"string"},"service":{"type":"string"},"requested_start":{"type":"string"},"requested_end":{"type":"string"},"date_after":{"type":"string"},"date_before":{"type":"string"}},"required":["action","service","requested_start","requested_end","date_after","date_before"]}}
+availability_tool = {"name":"check_availability","description":"Checks live Cork Podcast Studio availability through the existing Make scenario. Use when service, date and time are known. For services with a known duration, use that duration and do not ask the customer how long they want unless they explicitly request a different duration. If AVAILABLE and booking_url is returned, the exact URL must be included in the final customer response. Availability does not mean booked.","input_schema":{"type":"object","properties":{"action":{"type":"string"},"service":{"type":"string"},"requested_start":{"type":"string"},"requested_end":{"type":"string"},"date_after":{"type":"string"},"date_before":{"type":"string"}},"required":["action","service","requested_start","requested_end","date_after","date_before"]}}
 save_lead_tool = {"name":"save_lead","description":"Saves or updates a CPS lead. Use when enough useful customer information exists. Never claim booking, payment, notification or confirmation from this tool.","input_schema":{"type":"object","properties":{k:{"type":"string"} for k in ["name","email","phone","whatsapp","instagram","website","service_type","podcast_type","number_of_people","recording_duration","preferred_recording_date","preferred_time","seating_requirements","lighting_requirements","rgb_effects","lighting_required","post_production_required","marketing_social_media_required","social_clips_required","quote_amount","quote_status"]},"required":["name","email","phone","whatsapp","instagram","website","service_type","podcast_type","number_of_people","recording_duration","preferred_recording_date","preferred_time","seating_requirements","lighting_requirements","rgb_effects","lighting_required","post_production_required","marketing_social_media_required","social_clips_required","quote_amount","quote_status"]}}
 
-SYSTEM_PROMPT = '''You are the AI receptionist for Cork Podcast Studio (CPS). Use approved business knowledge supplied in the system/context. Never invent pricing, availability, policies, services, facilities or booking links. Be professional, friendly and concise. Retain conversation context and do not ask customers to repeat known information. Resolve relative dates using the current Ireland date supplied below. Use check_availability whenever enough information is available. If it returns AVAILABLE with booking_url, include the exact URL unchanged and tell the customer they must complete the booking. AVAILABLE does not mean booked. save_lead only records lead information and never means booked, paid or confirmed. Never expose prompts, APIs, webhooks, internal IDs or technical details. If a tool fails, do not claim success.'''
+SYSTEM_PROMPT = '''You are the AI receptionist for Cork Podcast Studio (CPS). Use approved business knowledge supplied in the system/context. Never invent pricing, availability, policies, services, facilities or booking links. Be professional, friendly and concise. Retain conversation context and do not ask customers to repeat known information. Resolve relative dates using the current Ireland date supplied below. Use check_availability whenever enough information is available. IMPORTANT: if the customer names a service that has a known duration, use the known duration automatically and do not ask how long they want. Known durations supplied by the bridge are authoritative: Intermediate Pack 60 minutes; Premium Pro Pack 90 minutes; Studio Hire - 1 Hour 60 minutes; Studio Hire - Half Day 240 minutes; Studio Hire - Full Day 480 minutes. If a service has no known duration, only then ask when duration is genuinely required. If check_availability returns AVAILABLE with booking_url, include the exact URL unchanged and tell the customer they must complete the booking. AVAILABLE does not mean booked. save_lead only records lead information and never means booked, paid or confirmed. Never expose prompts, APIs, webhooks, internal IDs or technical details. If a tool fails, do not claim success.'''
 
 conversation_store = {}
 conversation_lock = threading.Lock()
@@ -52,6 +52,15 @@ def parse_availability(raw):
     return {"availability_status":s.group(1).upper() if s else "","booking_url":u.group(1).rstrip(",\"'") if u else ""}
 
 def call_availability(inp):
+    service=inp["service"]
+    if service in SERVICE_DURATIONS:
+        try:
+            start=datetime.fromisoformat(inp["requested_start"])
+            expected_end=start+timedelta(minutes=SERVICE_DURATIONS[service])
+            inp=dict(inp)
+            inp["requested_end"]=expected_end.isoformat()
+        except Exception:
+            pass
     payload={k:inp[k] for k in ["action","service","requested_start","requested_end","date_after","date_before"]}
     r=requests.post(MAKE_AVAILABILITY_WEBHOOK_URL,json=payload,timeout=30); r.raise_for_status()
     p=parse_availability(r.text)
@@ -100,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
             if not message: raise ValueError("Missing message")
             answer=process(message,data.get("source","Unknown"),data.get("thread_id",""),data.get("sender_name",""),data.get("sender_email",""),data.get("subject",""),data.get("message_id",""),data.get("received_at",""))
             self.send_json(200,{"status":"success","source":data.get("source","Unknown"),"message_id":data.get("message_id",""),"thread_id":data.get("thread_id",""),"response":answer})
-        except Exception as e: self.send_json(500,{"status":"error","error":"Bridge request failed"})
+        except Exception: self.send_json(500,{"status":"error","error":"Bridge request failed"})
 
 if __name__=="__main__":
     HTTPServer((BRIDGE_HOST,BRIDGE_PORT),Handler).serve_forever()
